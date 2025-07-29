@@ -1,158 +1,206 @@
 import pygame
 import sys
-import time
+import random
 
-# Khởi tạo
+# Khởi tạo pygame
 pygame.init()
 
-# Kích thước
+# Kích thước ô và số hàng/cột
 TILE_SIZE = 40
-ROWS, COLS = 13, 15
-WIDTH, HEIGHT = COLS * TILE_SIZE, ROWS * TILE_SIZE + 60
+ROWS = 15
+COLS = 15
+WIDTH = TILE_SIZE * COLS
+HEIGHT = TILE_SIZE * ROWS
+
+# Màu sắc
+WHITE = (255, 255, 255)
+GRAY = (100, 100, 100)
+GREEN = (0, 255, 0)
+ORANGE = (255, 165, 0)
+RED = (255, 0, 0)
+BLACK = (0, 0, 0)
+YELLOW = (255, 255, 0)
+
+# Font
+font = pygame.font.SysFont(None, 36)
+
+# Tạo cửa sổ
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Boom 2D")
 
+# Clock
 clock = pygame.time.Clock()
-font = pygame.font.SysFont(None, 36)
 
-# Màu
-WHITE = (255, 255, 255)
-GRAY = (150, 150, 150)
-DARKGRAY = (80, 80, 80)
-RED = (255, 0, 0)
-ORANGE = (255, 165, 0)
-BLACK = (0, 0, 0)
-GREEN = (0, 255, 0)
+# Thời gian
+start_time = pygame.time.get_ticks()
+win_time_used = None
 
-# Map (0: trống, 1: tường cứng, 2: gạch mềm)
-map_data = [
-    [1 if x % 2 == 1 and y % 2 == 1 else 2 for x in range(COLS)] for y in range(ROWS)
-]
-for y in range(ROWS):
-    for x in range(COLS):
-        if x == 0 or y == 0 or x == COLS - 1 or y == ROWS - 1:
-            map_data[y][x] = 1
+# Thông số game
+TIMER_LIMIT = 60  # giây
+WIN_CONDITION = random.randint(10, 20)  # số hộp phải phá để thắng
 
-map_data[1][1] = map_data[1][2] = map_data[2][1] = 0
+# Trạng thái
+menu = True
+running = False
+win = False
+lose = False
 
-player_pos = [1, 1]
+# Vị trí người chơi
+player_x = 1
+player_y = 1
+
+# Danh sách boom
 bombs = []
+bomb_timer = 3000  # ms
+bomb_range = 1
 explosions = []
-start_time = 0
-game_started = False
-game_over = False
 
-# ---------------- Vẽ ----------------
+# Số hộp đã phá
+destroyed_boxes = 0
+
+# Tạo bản đồ
+def generate_map():
+    map_data = []
+    total_cells = ROWS * COLS
+    total_boxes = random.randint(total_cells // 2, (total_cells * 3) // 4)
+    box_count = 0
+    for row in range(ROWS):
+        line = []
+        for col in range(COLS):
+            if (row, col) in [(1, 1), (1, 2), (2, 1)]:
+                line.append(0)
+            else:
+                rand = random.randint(1, 100)
+                if rand <= 10:
+                    line.append(1)  # tường cứng
+                elif rand <= 80 and box_count < total_boxes:
+                    line.append(2)  # hộp phá được
+                    box_count += 1
+                else:
+                    line.append(0)
+        map_data.append(line)
+    return map_data
+
+map_data = generate_map()
+map_data[player_y][player_x] = 0
+
 def draw_map():
     for y in range(ROWS):
         for x in range(COLS):
             rect = pygame.Rect(x*TILE_SIZE, y*TILE_SIZE, TILE_SIZE, TILE_SIZE)
             if map_data[y][x] == 1:
-                pygame.draw.rect(screen, DARKGRAY, rect)
-            elif map_data[y][x] == 2:
                 pygame.draw.rect(screen, GRAY, rect)
+            elif map_data[y][x] == 2:
+                pygame.draw.rect(screen, ORANGE, rect)
             else:
-                pygame.draw.rect(screen, WHITE, rect)
+                pygame.draw.rect(screen, (50, 50, 50), rect)
             pygame.draw.rect(screen, BLACK, rect, 1)
 
 def draw_player():
-    x, y = player_pos
-    rect = pygame.Rect(x*TILE_SIZE+5, y*TILE_SIZE+5, TILE_SIZE-10, TILE_SIZE-10)
+    rect = pygame.Rect(player_x*TILE_SIZE, player_y*TILE_SIZE, TILE_SIZE, TILE_SIZE)
     pygame.draw.rect(screen, GREEN, rect)
 
-def place_bomb():
-    x, y = player_pos
-    bombs.append({"pos": (x, y), "time": pygame.time.get_ticks()})
-
-def update_bombs():
+def draw_bombs():
     current_time = pygame.time.get_ticks()
     for bomb in bombs[:]:
-        x, y = bomb["pos"]
-        pygame.draw.ellipse(screen, RED, pygame.Rect(x*TILE_SIZE+10, y*TILE_SIZE+10, TILE_SIZE-20, TILE_SIZE-20))
-        if current_time - bomb["time"] >= 2000:
-            explode_bomb(x, y)
+        rect = pygame.Rect(bomb['x']*TILE_SIZE, bomb['y']*TILE_SIZE, TILE_SIZE, TILE_SIZE)
+        pygame.draw.circle(screen, RED, rect.center, TILE_SIZE//3)
+        if current_time - bomb['time'] > bomb_timer:
+            explode_bomb(bomb)
             bombs.remove(bomb)
 
-def explode_bomb(x, y):
-    directions = [(0,0), (1,0), (-1,0), (0,1), (0,-1)]
-    for dx, dy in directions:
-        nx, ny = x+dx, y+dy
-        if 0 <= nx < COLS and 0 <= ny < ROWS:
-            if map_data[ny][nx] == 2:
-                map_data[ny][nx] = 0
-            explosions.append({"pos": (nx, ny), "time": pygame.time.get_ticks()})
+def explode_bomb(bomb):
+    global destroyed_boxes, lose
+    explosion_cells = []
+    for dx, dy in [(0,0), (1,0), (-1,0), (0,1), (0,-1)]:
+        bx = bomb['x'] + dx
+        by = bomb['y'] + dy
+        if 0 <= bx < COLS and 0 <= by < ROWS:
+            explosion_cells.append((bx, by))
+            explosions.append({'x': bx, 'y': by, 'time': pygame.time.get_ticks()})
+            if map_data[by][bx] == 2:
+                map_data[by][bx] = 0
+                destroyed_boxes += 1
 
-def update_explosions():
+    # Kiểm tra thua NGAY LẬP TỨC nếu người chơi đứng trong vùng nổ
+    for (bx, by) in explosion_cells:
+        if player_x == bx and player_y == by:
+            lose = True
+
+def draw_explosions():
     current_time = pygame.time.get_ticks()
     for exp in explosions[:]:
-        x, y = exp["pos"]
-        rect = pygame.Rect(x*TILE_SIZE+5, y*TILE_SIZE+5, TILE_SIZE-10, TILE_SIZE-10)
-        pygame.draw.rect(screen, ORANGE, rect)
-        if current_time - exp["time"] >= 500:
+        if current_time - exp['time'] <= 500:
+            rect = pygame.Rect(exp['x']*TILE_SIZE, exp['y']*TILE_SIZE, TILE_SIZE, TILE_SIZE)
+            pygame.draw.rect(screen, YELLOW, rect)
+        else:
             explosions.remove(exp)
 
-def draw_ui():
-    if game_started and not game_over:
-        time_left = max(0, 60 - int((pygame.time.get_ticks() - start_time)/1000))
-        timer_text = font.render(f"Time: {time_left}s", True, BLACK)
-        screen.blit(timer_text, (10, HEIGHT - 50))
-
-def show_start_screen():
-    screen.fill(WHITE)
-    title = font.render("BOOM 2D", True, BLACK)
-    start_button = font.render("Click to START", True, RED)
-    screen.blit(title, (WIDTH//2 - title.get_width()//2, HEIGHT//2 - 60))
-    screen.blit(start_button, (WIDTH//2 - start_button.get_width()//2, HEIGHT//2))
+def show_menu():
+    screen.fill(BLACK)
+    text = font.render("Press ENTER to Start", True, WHITE)
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//2))
     pygame.display.flip()
 
 def show_game_over():
-    over_text = font.render("You lose! click to play again", True, RED)
-    screen.blit(over_text, (WIDTH//2 - over_text.get_width()//2, HEIGHT//2))
+    text = font.render("You LOSE! Click to play again", True, RED)
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//2))
     pygame.display.flip()
 
-# ---------------- MAIN LOOP ------------------
-while True:
-    clock.tick(180)
+def show_game_win():
+    text = font.render("You WIN! Click to play again", True, GREEN)
+    time_text = font.render(f"Time used: {win_time_used} seconds", True, RED)
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//2 - 30))
+    screen.blit(time_text, (WIDTH//2 - time_text.get_width()//2, HEIGHT//2 + 10))
+    pygame.display.flip()
 
-    if not game_started:
-        show_start_screen()
+# Main loop
+while True:
+    if menu:
+        show_menu()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                game_started = True
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                WIN_CONDITION = random.randint(10, 20)
+                map_data = generate_map()
+                menu = False
+                running = True
                 start_time = pygame.time.get_ticks()
-    elif game_over:
-        show_game_over()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                player_pos = [1, 1]
+                destroyed_boxes = 0
+                player_x, player_y = 1, 1
                 bombs.clear()
                 explosions.clear()
-                map_data = [[1 if x % 2 == 1 and y % 2 == 1 else 2 for x in range(COLS)] for y in range(ROWS)]
-                for y in range(ROWS):
-                    for x in range(COLS):
-                        if x == 0 or y == 0 or x == COLS - 1 or y == ROWS - 1:
-                            map_data[y][x] = 1
-                map_data[1][1] = map_data[1][2] = map_data[2][1] = 0
-                game_over = False
-                start_time = pygame.time.get_ticks()
-    else:
-        screen.fill(WHITE)
+                win = False
+                lose = False
+                win_time_used = None
+    elif running:
+        screen.fill(BLACK)
         draw_map()
         draw_player()
-        update_bombs()
-        update_explosions()
-        draw_ui()
+        draw_bombs()
+        draw_explosions()
 
-        # Kiểm tra trùng với bom nổ
-        for exp in explosions:
-            if tuple(player_pos) == exp["pos"]:
-                game_over = True
+        elapsed = (pygame.time.get_ticks() - start_time) // 1000
+        remaining = max(0, TIMER_LIMIT - elapsed)
+        timer_text = font.render(f"Time: {remaining}", True, WHITE)
+        screen.blit(timer_text, (10, 10))
+
+        box_text = font.render(f"Destroyed: {destroyed_boxes}/{WIN_CONDITION}", True, ORANGE)
+        screen.blit(box_text, (10, 50))
+
+        if remaining == 0:
+            lose = True
+            running = False
+
+        if destroyed_boxes >= WIN_CONDITION and not win:
+            win = True
+            win_time_used = elapsed
+            running = False
+
+        if lose:
+            running = False
 
         pygame.display.flip()
 
@@ -160,22 +208,47 @@ while True:
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_LEFT:
+                    if player_x > 0 and map_data[player_y][player_x-1] != 1 and map_data[player_y][player_x-1] != 2:
+                        player_x -= 1
+                elif event.key == pygame.K_RIGHT:
+                    if player_x < COLS-1 and map_data[player_y][player_x+1] != 1 and map_data[player_y][player_x+1] != 2:
+                        player_x += 1
+                elif event.key == pygame.K_UP:
+                    if player_y > 0 and map_data[player_y-1][player_x] != 1 and map_data[player_y-1][player_x] != 2:
+                        player_y -= 1
+                elif event.key == pygame.K_DOWN:
+                    if player_y < ROWS-1 and map_data[player_y+1][player_x] != 1 and map_data[player_y+1][player_x] != 2:
+                        player_y += 1
+                elif event.key == pygame.K_SPACE:
+                    bombs.append({'x': player_x, 'y': player_y, 'time': pygame.time.get_ticks()})
 
-        keys = pygame.key.get_pressed()
-        x, y = player_pos
-        if keys[pygame.K_LEFT] and map_data[y][x-1] == 0:
-            player_pos[0] -= 1
-            time.sleep(0.1)
-        if keys[pygame.K_RIGHT] and map_data[y][x+1] == 0:
-            player_pos[0] += 1
-            time.sleep(0.1)
-        if keys[pygame.K_UP] and map_data[y-1][x] == 0:
-            player_pos[1] -= 1
-            time.sleep(0.1)
-        if keys[pygame.K_DOWN] and map_data[y+1][x] == 0:
-            player_pos[1] += 1
-            time.sleep(0.1)
-        if keys[pygame.K_SPACE]:
-            if all(b["pos"] != tuple(player_pos) for b in bombs):
-                place_bomb()
-            time.sleep(0.2)
+        clock.tick(60)
+
+    elif win:
+        screen.fill(BLACK)
+        draw_map()
+        draw_player()
+        show_game_win()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                menu = True
+                win = False
+
+    elif lose:
+        screen.fill(BLACK)
+        draw_map()
+        draw_player()
+        draw_explosions()
+        show_game_over()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                menu = True
+                lose = False
